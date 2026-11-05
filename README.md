@@ -87,6 +87,24 @@ build-app.bat
 
 也可以用 VS 直接打开 `app\BTAudioReceiver.vcxproj`。
 
+## 发布
+
+仓库**只存源码**，二进制通过 GitHub Releases 分发（不提交 exe，避免仓库无限膨胀）。
+
+```powershell
+# 1. 打包（只挑运行时文件，排除 58 MB 的 .pdb）
+powershell -ExecutionPolicy Bypass -File .\scripts\package.ps1 -Version 0.1.0
+
+# 2. 上传为 release 附件
+gh release create v0.1.0 "dist\BTAudioReceiver-0.1.0-win-x64.zip" --title "v0.1.0" --notes "..."
+```
+
+`dist/` 已加入 `.gitignore`。下载地址可固定使用：
+
+```
+https://github.com/<user>/BTAudioReceiver/releases/latest/download/BTAudioReceiver-0.1.0-win-x64.zip
+```
+
 ## 目录结构
 
 ```
