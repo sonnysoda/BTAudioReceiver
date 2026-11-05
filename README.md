@@ -105,6 +105,32 @@ gh release create v0.1.0 "dist\BTAudioReceiver-0.1.0-win-x64.zip" --title "v0.1.
 https://github.com/<user>/BTAudioReceiver/releases/latest/download/BTAudioReceiver-0.1.0-win-x64.zip
 ```
 
+## 常见问题
+
+**Q：只拷贝 `BTAudioReceiver.exe` 到别的文件夹，提示缺少 `btcore.dll` / `Microsoft.WindowsAppRuntime.Bootstrap.dll`**
+
+**A：它不是单文件程序**，必须整个文件夹一起复制。`btcore.dll` 和
+`Microsoft.WindowsAppRuntime.Bootstrap.dll` 是加载期依赖，缺了 exe 连启动都做不到。
+
+完整的运行时文件集（共 9 个，`.pdb` 不需要）：
+
+```
+BTAudioReceiver.exe
+btcore.dll
+App.xbf
+MainWindow.xbf
+BTAudioReceiver.pri
+Microsoft.WindowsAppRuntime.Bootstrap.dll
+Microsoft.Web.WebView2.Core.dll
+Microsoft.Web.WebView2.Core.winmd
+```
+
+最省事的办法是用 `scripts/package.ps1` 打好的 zip，解压即用。
+
+**Q：双击完全没反应，也没有报错框**
+
+**A：大概率是没装 Windows App Runtime 1.8**。安装地址见上方「系统要求」。
+
 ## 目录结构
 
 ```
