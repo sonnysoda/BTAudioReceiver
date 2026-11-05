@@ -24,6 +24,7 @@
 | 项 | 要求 |
 |---|---|
 | 系统 | Windows 11 |
+| 架构 | x64（未提供 ARM64 构建） |
 | 蓝牙 | 适配器与驱动需支持 **A2DP Sink** 角色 |
 | 运行时 | **Windows App Runtime 1.8**（必装，否则双击无反应） |
 
@@ -48,7 +49,7 @@ BTAudioReceiver.exe --debug -d D:\logs
 
 ## 数据存储与卸载
 
-本程序是**绿色单文件**，无需安装。用户数据只有一处：
+本程序**绿色免安装**，不需要安装程序，解压即用。用户数据只有一处：
 
 ```
 注册表  HKEY_CURRENT_USER\Software\BTAudioReceiver   （一个 JSON 字符串值）
@@ -86,6 +87,12 @@ build-app.bat
 产物：`app\x64\Release\BTAudioReceiver\BTAudioReceiver.exe`
 
 也可以用 VS 直接打开 `app\BTAudioReceiver.vcxproj`。
+
+两点注意：
+
+- **必须先编 `core` 再编 `app`**，`build-app.bat` 会检查 `btcore.lib` 是否存在。
+- **首次构建较慢**（几分钟），因为 CppWinRT 要为整个 Windows SDK 生成投影头文件；
+  之后是增量的。
 
 ## 发布
 
@@ -130,6 +137,23 @@ Microsoft.Web.WebView2.Core.winmd
 
 **A：大概率是没装 Windows App Runtime 1.8**。安装地址见上方「系统要求」。
 
+**Q：为什么不能做成单个 exe？（参考项目就是一个 exe）**
+
+**A：这是 WinUI 3 的固有限制，与体积无关。** 两处硬依赖：
+
+1. **`.xbf` / `.pri` 是磁盘文件**。XAML 编译产物不嵌入 exe 资源，而是通过
+   `ms-appx:///` 由 MRT Core 从磁盘读取，没有"从内存加载编译后 XAML"的 API。
+2. **`Microsoft.WindowsAppRuntime.Bootstrap.dll` 无法静态链接**。NuGet 里虽然有
+   `Microsoft.WindowsAppRuntime.Bootstrap.lib`，但它只有 3 KB、符号带 `__imp_`
+   前缀，是**导入库**而非静态库。
+
+参考项目能做到单文件，是因为它用 **C# / .NET 8 + WPF**，走
+`dotnet publish -p:PublishSingleFile=true`——.NET 有单文件打包机制，WinUI 3 没有。
+
+真要单文件只有三条路：改用 MSIX 打包（变成"安装"）、去掉 XAML 全用代码写 UI
+（仍需 Bootstrap.dll）、或换 Win32 自绘。当前选择是"绿色文件夹"，与绝大多数
+C++ 桌面应用一致。
+
 ## 目录结构
 
 ```
@@ -144,11 +168,13 @@ BTAudioReceiver/
 │   ├── strings.h            双语字符串表
 │   ├── log.h                日志（控制台 / 文件）
 │   └── cli.h                命令行解析
-├── core/                    Rust 业务内核（cdylib）
+├── core/                    Rust 业务内核（静态库，链入 exe）
 │   ├── src/lib.rs           WinRT 调用、连接状态机
 │   ├── include/btc_core.h   C ABI 契约
 │   └── examples/            验证用探针（STA / 线程公寓）
-├── scripts/uninstall.ps1    卸载脚本
+├── scripts/
+│   ├── package.ps1          打包（生成可分发的 zip）
+│   └── uninstall.ps1        卸载（清理注册表）
 └── docs/
     ├── NOTES.md             开发踩坑记录（WinUI 3 C++ 的坑基本都在这里）
     └── REQUIREMENTS.md      需求规格
@@ -161,8 +187,12 @@ BTAudioReceiver/
 - **无法区分“已连接”与“正在串流”**：`AudioPlaybackConnectionState` 只有 `Closed` / `Opened`
 - **只支持 A2DP**：LE Audio 在 Windows 没有接收端 API；aptX/LDAC 由系统协商，无公开接口
 - **没有音量增强（>100%）**：系统音量 API 上限为 0 dB，软件层面无法突破
+- **不是单文件**：WinUI 3 的资源与引导器必须是磁盘文件，分发形式为文件夹（见 FAQ）
 - 应用内的“配对接管”开关、每设备自动连接尚未实现
 
 ## 致谢
 
-参考了 [Noxy229/BluetoothAudioReceiver](https://github.com/Noxy229/BluetoothAudioReceiver)（MIT）的思路。
+思路参考 [Noxy229/BluetoothAudioReceiver](https://github.com/Noxy229/BluetoothAudioReceiver)（MIT）。
+
+两者技术栈不同：那个项目是 C# / .NET 8 + WPF，本项目是 **Rust 内核 + C++/WinRT / WinUI 3**，
+代码完全独立实现，不共享任何代码。
