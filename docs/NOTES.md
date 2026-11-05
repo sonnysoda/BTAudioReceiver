@@ -142,9 +142,14 @@ build-app.bat
 - **产品名/进程名**：`BTAudioReceiver`（exe、窗口类、Mutex、注册表键全部统一）
 - **设置存注册表** `HKCU\Software\BTAudioReceiver`（单个 JSON 字符串值），
   **不落地任何文件**；设置里有「重置所有设置」按钮清空该键
-- **调试模式**（设置内开关，默认关）：
-  - 关 → 全程不产生任何文件（日志写入为空操作）
-  - 开 → 每次运行在 exe 同目录生成 `BTAudioReceiver-YYYYMMDD-HHmmss.log`
+- **调试日志**（命令行旗标，不再放在设置里）：
+  - 无参数 → 全程不产生任何文件（`Write()` 是空操作）
+  - `--debug` → 日志打印到控制台
+  - `--debug --output` → 控制台 + exe 同目录 `BTAudioReceiver-YYYYMMDD-HHmmss.log`
+  - `--debug -d <路径>` → 控制台 + 写入指定路径（目录则自动命名）
+  - 实现要点：WinExe 子系统没有控制台，需 `AttachConsole(ATTACH_PARENT_PROCESS)`，
+    失败才 `AllocConsole()`；已有 stdout（如被重定向）时不要新建控制台，
+    且 `WriteConsoleW` 失败要回退 `fwrite`，否则输出被重定向时会丢日志
 
 ## 尚未完成
 
