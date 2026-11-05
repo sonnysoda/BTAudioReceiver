@@ -20,7 +20,11 @@ cd ..\app
 build-app.bat
 ```
 
-产物：`x64\Release\BtSink\BtSink.exe`（+ `btcore.dll` 由 MSBuild 自动复制）。
+产物：`x64\Release\BTAudioReceiver\BTAudioReceiver.exe`。
+
+Rust 内核以**静态库**（`btcore.lib`）链入 exe，所以不再有 `btcore.dll`。
+`core/Cargo.toml` 的 `crate-type` 是 `["staticlib", "rlib"]`
+（保留 `rlib` 是为了 `examples/` 里的验证探针能直接调用）。
 
 日常开发也可以直接用 VS 打开 `BTAudioReceiver.vcxproj`。
 
@@ -88,11 +92,13 @@ build-app.bat
 
 | 项 | 值 |
 |---|---|
-| BtSink.exe | 239 KB |
-| btcore.dll | 195 KB |
+| BTAudioReceiver.exe（含静态链接的 Rust 内核） | 557 KB |
 | 常驻 Working Set | 100 MB（启用 Mica 后） |
 | 常驻 Private Bytes | 80.9 MB |
 | 线程数 | 57 |
+
+> 早期是「exe 373 KB + btcore.dll 195 KB」的动态库方案，改为静态链接后
+> exe 变为 557 KB（+184 KB），少一个文件、少一次 DLL 加载。
 
 ⚠️ 92.5 MB 说明 **WinUI 3 的运行时开销远大于 Rust 省下的部分**，
 与 C# WPF 版处于同一量级。选 WinUI 3 等于放弃“低内存”这一目标。

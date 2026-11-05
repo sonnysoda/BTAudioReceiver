@@ -107,16 +107,15 @@ https://github.com/<user>/BTAudioReceiver/releases/latest/download/BTAudioReceiv
 
 ## 常见问题
 
-**Q：只拷贝 `BTAudioReceiver.exe` 到别的文件夹，提示缺少 `btcore.dll` / `Microsoft.WindowsAppRuntime.Bootstrap.dll`**
+**Q：只拷贝 `BTAudioReceiver.exe` 到别的文件夹，提示缺少 `Microsoft.WindowsAppRuntime.Bootstrap.dll`**
 
-**A：它不是单文件程序**，必须整个文件夹一起复制。`btcore.dll` 和
-`Microsoft.WindowsAppRuntime.Bootstrap.dll` 是加载期依赖，缺了 exe 连启动都做不到。
+**A：它不是单文件程序**，必须整个文件夹一起复制。Rust 内核已静态链接进 exe，
+但 Windows App SDK 的引导器和 XAML 资源仍是外部文件，缺了无法启动。
 
-完整的运行时文件集（共 9 个，`.pdb` 不需要）：
+完整的运行时文件集（共 7 个，`.pdb` 不需要）：
 
 ```
 BTAudioReceiver.exe
-btcore.dll
 App.xbf
 MainWindow.xbf
 BTAudioReceiver.pri
@@ -155,7 +154,7 @@ BTAudioReceiver/
     └── REQUIREMENTS.md      需求规格
 ```
 
-架构上分两层：**C++/WinRT 只做界面**，所有 WinRT 蓝牙/音频调用都在 **Rust** 里，通过 C ABI 交互（结构化数据走 UTF-8 JSON）。
+架构上分两层：**C++/WinRT 只做界面**，所有 WinRT 蓝牙/音频调用都在 **Rust** 里，通过 C ABI 交互（结构化数据走 UTF-8 JSON）。Rust 内核以静态库链接进 exe，没有独立的 DLL。
 
 ## 已知限制
 

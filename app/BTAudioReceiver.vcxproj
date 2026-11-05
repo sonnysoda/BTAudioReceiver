@@ -93,7 +93,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(CoreOutDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>btcore.dll.lib;user32.lib;gdi32.lib;shell32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>btcore.lib;user32.lib;gdi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;advapi32.lib;ws2_32.lib;userenv.lib;bcrypt.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
 
@@ -173,13 +173,7 @@
   </ItemGroup>
 
   <!-- 把 Rust cdylib 复制到输出目录，否则运行时会找不到 btcore.dll -->
-  <Target Name="CopyBtCore" AfterTargets="Build">
-    <ItemGroup>
-      <BtCoreFiles Include="$(CoreOutDir)\btcore.dll" />
-    </ItemGroup>
-    <Message Importance="high" Text="Copying btcore.dll -> $(OutDir)" />
-    <Copy SourceFiles="@(BtCoreFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
-  </Target>
+  <!-- btcore 已改为静态库，直接链进 exe，不再需要复制 btcore.dll -->
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

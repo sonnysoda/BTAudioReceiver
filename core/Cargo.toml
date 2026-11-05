@@ -6,7 +6,7 @@ description = "A2DP Sink 业务内核（C ABI 供 C++/WinRT 外壳调用）"
 
 [lib]
 name = "btcore"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 windows = { version = "0.62", features = [

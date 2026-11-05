@@ -16,14 +16,19 @@
 [CmdletBinding()]
 param(
     [string]$Version = '0.1.0',
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [string]$OutputDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $buildDir = Join-Path $repoRoot "app\x64\$Configuration\BTAudioReceiver"
-$distDir = Join-Path $repoRoot 'dist'
+if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+    $distDir = Join-Path $repoRoot 'dist'
+} else {
+    $distDir = $OutputDir
+}
 $zipPath = Join-Path $distDir "BTAudioReceiver-$Version-win-x64.zip"
 
 if (-not (Test-Path $buildDir)) {
@@ -33,7 +38,6 @@ if (-not (Test-Path $buildDir)) {
 # 缺少任何一个都跑不起来
 $required = @(
     'BTAudioReceiver.exe',
-    'btcore.dll',
     'App.xbf',
     'MainWindow.xbf',
     'BTAudioReceiver.pri',
@@ -91,7 +95,7 @@ BTAudioReceiver $Version
 
 本目录下的文件请勿删除
 ----------------------
-  BTAudioReceiver.exe / btcore.dll / *.xbf / *.pri
+  BTAudioReceiver.exe / *.xbf / *.pri
   Microsoft.WindowsAppRuntime.Bootstrap.dll
 缺少任意一个都无法启动。
 

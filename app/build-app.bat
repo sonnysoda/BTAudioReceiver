@@ -28,7 +28,7 @@ set "MSBUILD_EXE=%VSDIR%\MSBuild\Current\Bin\MSBuild.exe"
 
 cd /d "%~dp0"
 
-if not exist "..\core\target\release\btcore.dll.lib" (
+if not exist "..\core\target\release\btcore.lib" (
   echo CORE_NOT_BUILT: run "cargo build --release" inside ..\core first
   exit /b 1
 )
