@@ -122,4 +122,4 @@ BTAudioReceiver/
 
 ## 致谢
 
-参考了 [sonnysoda/BluetoothAudioReceiver](https://github.com/sonnysoda/BluetoothAudioReceiver)（MIT）的思路。
+参考了 [Noxy229/BluetoothAudioReceiver](https://github.com/Noxy229/BluetoothAudioReceiver)（MIT）的思路。

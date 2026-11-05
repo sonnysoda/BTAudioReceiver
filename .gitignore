@@ -30,3 +30,7 @@ Thumbs.db
 # NuGet 还原中间产物
 app/obj/
 */obj/
+
+# 打包输出
+dist/
+release/
