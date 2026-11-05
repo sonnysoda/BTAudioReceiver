@@ -1,0 +1,32 @@
+# Visual Studio / MSBuild 产物
+app/x64/
+app/Generated Files/
+app/*.user
+app/*.VC.db
+app/*.VC.opendb
+app/*.stale
+
+# 编译中间文件
+*.obj
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.exp
+*.lib
+*.tlog
+
+# Rust
+core/target/
+
+# 运行时日志
+BTAudioReceiver-*.log
+bt_sink.log
+
+# 系统
+Thumbs.db
+.DS_Store
+
+# NuGet 还原中间产物
+app/obj/
+*/obj/
