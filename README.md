@@ -2,7 +2,7 @@
 
 把 Windows 电脑变成蓝牙音箱：接收手机 / 平板推来的音频，用电脑的扬声器播放。
 
-**单个 242 KB 的 exe，零依赖**——拷到任何 Windows 10/11 机器上双击即用，不需要安装任何运行时。
+拷到任何 Windows 10/11 机器上双击即用，不需要安装任何运行时。
 
 > Turn a Windows PC into a Bluetooth speaker (A2DP sink), shipped as one self-contained exe.
 
@@ -121,10 +121,9 @@ BTAudioReceiver/
 │   └── cli.h               命令行解析
 ├── core/                   Rust 业务内核（静态库，链入 exe）
 │   ├── src/lib.rs          WinRT 蓝牙调用、连接状态机
-│   ├── include/btc_core.h  C ABI 契约
-│   └── examples/           验证用探针（STA / 线程公寓）
-├── scripts/uninstall.ps1   卸载脚本
-└── dist/                   构建产物（不提交）
+│   └── include/btc_core.h  C ABI 契约
+└── scripts/uninstall.ps1   卸载脚本
+ 
 ```
 
 ## 技术说明
@@ -134,27 +133,9 @@ BTAudioReceiver/
 分两层：**Win32 只做界面**，所有 WinRT 蓝牙 / 音频调用都在 **Rust** 里，通过 C ABI 交互
 （结构化数据用 UTF-8 文本）。Rust 内核编译为**静态库**直接链入 exe，所以没有独立的 DLL。
 
-### 为什么不用 WinUI 3
-
-第一版用的是 C++/WinRT + WinUI 3，功能相同但分发代价大：
-
-| | WinUI 3 版 | 本版（Win32） |
-|---|---|---|
-| 分发的文件 | 7 个 | **1 个** |
-| 前置依赖 | 必须预装 Windows App Runtime 1.8 | **无** |
-| 体积 | 557 KB exe + 1.3 MB 资源与 DLL | **242 KB** |
-| 内存（Working Set） | 100 MB | **约 60 MB** |
-
-WinUI 3 做不到单文件，是结构性原因，不是配置问题：
-
-1. **`.xbf` / `.pri` 是磁盘文件**：XAML 编译产物不嵌入 exe 资源，而是由 MRT Core 从磁盘读取，
-   没有"从内存加载编译后 XAML"的 API。
-2. **`Microsoft.WindowsAppRuntime.Bootstrap.dll` 无法静态链接**：NuGet 里那个
-   `Microsoft.WindowsAppRuntime.Bootstrap.lib` 只有 3 KB、符号带 `__imp_` 前缀，是**导入库**。
-
 ### 渲染
 
-- 直接 `ID2D1HwndRenderTarget` + DirectWrite，通过 GDI 重定向表面呈现
+- `ID2D1HwndRenderTarget` + DirectWrite，通过 GDI 重定向表面呈现
 - 全部 UI 自绘：列表行、按钮、分段控件、模态设置面板
 - **不做 Mica**：Mica 需要 DWM 背景透出，必须走 D3D11 合成交换链 +
   DirectComposition，而 `ID2D1HwndRenderTarget` 与之不兼容。实测两者内存只差 1.5 MB，
@@ -183,6 +164,3 @@ WinUI 3 做不到单文件，是结构性原因，不是配置问题：
 ## 致谢
 
 思路参考 [Noxy229/BluetoothAudioReceiver](https://github.com/Noxy229/BluetoothAudioReceiver)（MIT）。
-
-两者技术栈不同：那个项目是 C# / .NET 8 + WPF，本项目是 **Rust + Win32 / Direct2D**，
-代码完全独立实现，不共享任何代码。
