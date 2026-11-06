@@ -2,12 +2,12 @@
 
 把 Windows 电脑变成蓝牙音箱：接收手机 / 平板推来的音频，用电脑的扬声器播放。
 
-**单个 238 KB 的 exe，零依赖**——拷到任何 Windows 10/11 机器上双击即用，不需要安装任何运行时。
+**单个 242 KB 的 exe，零依赖**——拷到任何 Windows 10/11 机器上双击即用，不需要安装任何运行时。
 
 > Turn a Windows PC into a Bluetooth speaker (A2DP sink), shipped as one self-contained exe.
 
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
-![size](https://img.shields.io/badge/exe-238%20KB-informational)
+![size](https://img.shields.io/badge/exe-242%20KB-informational)
 ![ui](https://img.shields.io/badge/UI-Win32%20%2B%20Direct2D-blue)
 ![core](https://img.shields.io/badge/core-Rust-orange)
 
@@ -15,7 +15,8 @@
 
 - **A2DP Sink 接收**：手机连上电脑即可外放
 - **单文件分发**：一个 exe，无 DLL、无运行时、无配置文件
-- **托盘常驻**：关闭窗口只是收进托盘，双击还原，右键菜单可断开 / 退出
+- **托盘常驻**：关闭窗口只是收进托盘，双击还原；右键菜单可连接最近设备 / 断开 / 退出
+- **记住最近设备**：连接成功后自动记录，最多 3 台，可从托盘菜单一键重连
 - **单实例**：重复启动只会唤起已有窗口，不会多开抢音频连接
 - **设备列表**：一页最多 6 行，超出可滚动；超长设备名左右折返滚动
 - **选中高亮**：已连接行左侧 3px 强调色竖条 + 低透明度底色
@@ -39,7 +40,7 @@
 2. 在手机蓝牙设置里配对这台电脑
 3. 在列表中选中设备，点「连接」
 
-关闭窗口会收进托盘；右键托盘图标可以断开或退出。
+关闭窗口会收进托盘；右键托盘图标可以连接最近设备、断开或退出。
 
 ## 命令行参数
 
@@ -60,10 +61,12 @@ BTAudioReceiver.exe --debug -d D:\logs
 
 ## 数据存储与卸载
 
-运行期只写一处用户数据：
+运行期只写注册表，不落地任何文件：
 
 ```
-注册表  HKEY_CURRENT_USER\Software\BTAudioReceiver   （一个字符串值）
+HKEY_CURRENT_USER\Software\BTAudioReceiver
+├── Config   语言、外观（key=value 串）
+└── Recent   最近连接的设备（每行 id<TAB>名称，最多 3 条）
 ```
 
 卸载 = 删除 exe + 清理注册表：
@@ -120,7 +123,8 @@ BTAudioReceiver/
 │   ├── src/lib.rs          WinRT 蓝牙调用、连接状态机
 │   ├── include/btc_core.h  C ABI 契约
 │   └── examples/           验证用探针（STA / 线程公寓）
-└── scripts/uninstall.ps1   卸载脚本
+├── scripts/uninstall.ps1   卸载脚本
+└── dist/                   构建产物（不提交）
 ```
 
 ## 技术说明
@@ -138,7 +142,7 @@ BTAudioReceiver/
 |---|---|---|
 | 分发的文件 | 7 个 | **1 个** |
 | 前置依赖 | 必须预装 Windows App Runtime 1.8 | **无** |
-| 体积 | 557 KB exe + 1.3 MB 资源与 DLL | **238 KB** |
+| 体积 | 557 KB exe + 1.3 MB 资源与 DLL | **242 KB** |
 | 内存（Working Set） | 100 MB | **约 60 MB** |
 
 WinUI 3 做不到单文件，是结构性原因，不是配置问题：
@@ -175,7 +179,6 @@ WinUI 3 做不到单文件，是结构性原因，不是配置问题：
 - **只支持 A2DP**：LE Audio 在 Windows 没有接收端 API；aptX / LDAC 由系统协商，无公开接口
 - **没有音量增强（>100%）**：系统音量 API 上限为 0 dB
 - **无辅助功能**：自绘控件不被 UI Automation 识别，读屏软件读不到
-- 托盘「连接最近设备」子菜单为占位，尚未实现最近设备记忆
 
 ## 致谢
 
