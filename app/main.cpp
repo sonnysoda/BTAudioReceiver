@@ -96,12 +96,8 @@ namespace
     int g_hoverIndex = -1;
     HCURSOR g_hand{ nullptr };
 
-    // ---- 设置面板（居中模态）----
+    // ---- 设置面板（居中模态，直接出现）----
     bool g_panelOpen = false;
-    float g_panelScale{ 1.0f };        // 0.94 → 1.0
-    float g_panelAlpha{ 1.0f };        // 0 → 1（遮罩与内容一起淡入）
-    ULONGLONG g_panelAnimStart{ 0 };
-    bool g_panelAnimating{ false };
 
     // ---- 按压反馈 ----
     int g_pressedKind{ 0 };            // 与 g_hoverKind 同义
@@ -238,12 +234,6 @@ namespace
     }
 
     // ---------------- 排版 ----------------
-    float EaseOutCubic(float t)
-    {
-        const float u = 1.0f - t;
-        return 1.0f - u * u * u;
-    }
-
     // 折返滚动：停留 → 左移到底 → 停留 → 退回，循环
     float MarqueeOffset(float overflow, double seconds)
     {
@@ -601,21 +591,13 @@ namespace
                    g_pressedKind == 3);
 
         // ---- 设置面板 ----
-        if (g_panelOpen || g_panelAlpha > 0.001f)
+        if (g_panelOpen)
         {
             if (g_brScrim)
             {
-                g_brScrim->SetOpacity(g_panelAlpha);
                 rt->FillRectangle(D2D1::RectF(0.0f, 0.0f, size.width, size.height),
                                   g_brScrim.Get());
-                g_brScrim->SetOpacity(1.0f);
             }
-
-            // 轻微缩放（0.94 → 1.0），以面板中心为原点
-            const float cx = (g_rcPanel.l + g_rcPanel.r) * 0.5f;
-            const float cy = (g_rcPanel.t + g_rcPanel.b) * 0.5f;
-            rt->SetTransform(
-                D2D1::Matrix3x2F::Scale(g_panelScale, g_panelScale, D2D1::Point2F(cx, cy)));
 
             FillRound(g_rcPanel, 12.0f, g_brPanel.Get(), g_brPanelBorder.Get());
 
@@ -645,8 +627,6 @@ namespace
 
             DrawButton(g_rcReset, texts::BtnReset(), false, g_hoverKind == 6, true,
                        g_pressedKind == 6);
-
-            rt->SetTransform(D2D1::Matrix3x2F::Identity());
         }
 
         gfx::EndDraw();
@@ -753,7 +733,7 @@ namespace
                                   &g_brPanel);
 
         g_brPress.Reset();
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.14f), &g_brPress);
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.20f), &g_brPress);
 
         g_brPanelBorder.Reset();
         rt->CreateSolidColorBrush(g_theme.accent, &g_brPanelBorder);
@@ -804,17 +784,6 @@ namespace
             return;
         }
         g_panelOpen = open;
-        g_panelAnimStart = ::GetTickCount64();
-        g_panelAnimating = true;
-        if (open)
-        {
-            g_panelScale = 0.94f;
-            g_panelAlpha = 0.0f;
-        }
-        if (g_hwnd)
-        {
-            ::SetTimer(g_hwnd, 1, 12, nullptr);
-        }
         Invalidate();
     }
 
@@ -1249,38 +1218,6 @@ namespace
             break;
 
         case WM_TIMER:
-            if (wParam == 1)
-            {
-                const ULONGLONG elapsed = ::GetTickCount64() - g_panelAnimStart;
-                float t = static_cast<float>(elapsed) / 140.0f;
-                if (t > 1.0f)
-                {
-                    t = 1.0f;
-                }
-                const float eased = EaseOutCubic(t);
-                if (g_panelOpen)
-                {
-                    g_panelScale = 0.94f + 0.06f * eased;
-                    g_panelAlpha = eased;
-                }
-                else
-                {
-                    g_panelScale = 1.0f - 0.04f * eased;
-                    g_panelAlpha = 1.0f - eased;
-                }
-                if (t >= 1.0f)
-                {
-                    g_panelAnimating = false;
-                    ::KillTimer(hwnd, 1);
-                    if (!g_panelOpen)
-                    {
-                        g_panelScale = 1.0f;
-                        g_panelAlpha = 0.0f;
-                    }
-                }
-                Invalidate();
-                return 0;
-            }
             if (wParam == 2)
             {
                 const ULONGLONG now = ::GetTickCount64();
