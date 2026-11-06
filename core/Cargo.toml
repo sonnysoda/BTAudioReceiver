@@ -1,0 +1,19 @@
+[package]
+name = "btcore"
+version = "0.1.0"
+edition = "2021"
+description = "A2DP Sink 业务内核（C ABI 供 C++/WinRT 外壳调用）"
+
+[lib]
+name = "btcore"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Devices_Enumeration",
+    "Media_Audio",
+    "Win32_System_WinRT",
+] }
+serde_json = "1"

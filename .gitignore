@@ -1,0 +1,28 @@
+# Visual Studio / MSBuild 产物
+app/x64/
+app/obj/
+app/*.user
+app/*.VC.db
+app/*.VC.opendb
+
+# 编译中间文件
+*.obj
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.exp
+*.tlog
+
+# Rust
+core/target/
+
+# 打包输出
+dist/
+
+# 运行时日志
+BTAudioReceiver-*.log
+
+# 系统
+Thumbs.db
+.DS_Store
