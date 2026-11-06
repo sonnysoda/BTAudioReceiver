@@ -1,11 +1,11 @@
-# Visual Studio / MSBuild 产物
+# ---------- 构建产物 ----------
 app/x64/
 app/obj/
-app/*.user
+app/Generated Files/
 app/*.VC.db
-app/*.VC.opendb
+app/*.VC.VC.opendb
 
-# 编译中间文件
+# ---------- 编译中间文件 ----------
 *.obj
 *.pdb
 *.ilk
@@ -13,16 +13,31 @@ app/*.VC.opendb
 *.ipdb
 *.exp
 *.tlog
+*.lastbuildstate
+*.idb
 
-# Rust
+# ---------- 二进制（源码仓库里不应出现）----------
+# 兜底：即使有人把编译结果拷到仓库任意位置，也不会被提交
+*.exe
+*.dll
+
+# ---------- Rust ----------
 core/target/
 
-# 打包输出
+# ---------- 打包 / 产物目录 ----------
 dist/
+*.zip
 
-# 运行时日志
-BTAudioReceiver-*.log
+# ---------- 日志 ----------
+*.log
 
-# 系统
+# ---------- Visual Studio / 编辑器 ----------
+.vs/
+*.suo
+*.user
+.vscode/
+
+# ---------- 系统 ----------
 Thumbs.db
+desktop.ini
 .DS_Store
