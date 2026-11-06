@@ -86,6 +86,17 @@ namespace
     int g_active = -1;
     int g_scroll = 0;
 
+    // 当前连接的设备（g_active 可能为 -1，例如从托盘最近列表连的设备不在当前列表里）
+    std::wstring g_activeId;
+    std::wstring g_activeName;
+
+    // 正在连接的设备（连接在工作线程，回调时用）
+    std::wstring g_pendingId;
+    std::wstring g_pendingName;
+
+    // 最近连接的设备，最多 3 条
+    std::vector<settings::RecentDevice> g_recent;
+
     FRect g_rcSettings{};
     FRect g_rcRefresh{};
     FRect g_rcConnect{};
@@ -491,9 +502,15 @@ namespace
         const D2D1_SIZE_F size = rt->GetSize();
         Layout(size.width);
 
-        const wchar_t* title = (g_active >= 0 && g_active < static_cast<int>(g_rows.size()))
-                                   ? g_rows[static_cast<size_t>(g_active)].name.c_str()
-                                   : texts::NotConnected();
+        const wchar_t* title = texts::NotConnected();
+        if (g_active >= 0 && g_active < static_cast<int>(g_rows.size()))
+        {
+            title = g_rows[static_cast<size_t>(g_active)].name.c_str();
+        }
+        else if (!g_activeName.empty())
+        {
+            title = g_activeName.c_str();
+        }
         DrawTextIn(title, g_fmtTitle.Get(), g_brPrimary.Get(),
                    FRect{ kPad, 16.0f, size.width - kPad, 44.0f });
 
@@ -503,12 +520,9 @@ namespace
         {
             status = texts::StateScanning();
         }
-        else if (g_active >= 0)
+        else if (!g_activeId.empty())
         {
-            status = (g_active < static_cast<int>(g_rows.size()) &&
-                      g_rows[static_cast<size_t>(g_active)].state == RowState::Connected)
-                         ? texts::StateConnected()
-                         : texts::StateDisconnected();
+            status = texts::StateConnected();
         }
         else if (g_rows.empty())
         {
@@ -764,7 +778,11 @@ namespace
         data.itemConnect = texts::TrayConnect();
         data.itemExit = texts::TrayExit();
         data.itemNoRecent = texts::TrayNoRecent();
-        data.canDisconnect = (g_active >= 0);
+        data.canDisconnect = !g_activeId.empty();
+        for (auto const& device : g_recent)
+        {
+            data.recent.push_back(device.name.empty() ? device.id : device.name);
+        }
         tray::Update(data);
     }
 
@@ -811,6 +829,7 @@ namespace
     void DoResetSettings()
     {
         settings::Reset();
+        g_recent.clear();
         texts::SetByCode(settings::Current().language);
         if (g_hwnd)
         {
@@ -821,9 +840,10 @@ namespace
         Invalidate();
     }
 
-    void BeginConnect(int index)
+    // index < 0 表示该设备不在当前列表里（例如从托盘最近列表发起）
+    void BeginConnectById(std::wstring const& id, std::wstring const& name, int index)
     {
-        if (g_busy || index < 0 || index >= static_cast<int>(g_rows.size()))
+        if (g_busy || id.empty())
         {
             return;
         }
@@ -836,12 +856,19 @@ namespace
                 row.state = RowState::Idle;
             }
         }
-        g_rows[static_cast<size_t>(index)].state = RowState::Connecting;
+        if (index >= 0 && index < static_cast<int>(g_rows.size()))
+        {
+            g_rows[static_cast<size_t>(index)].state = RowState::Connecting;
+        }
+
         g_selected = index;
         g_active = -1;
+        g_activeId.clear();
+        g_activeName.clear();
+        g_pendingId = id;
+        g_pendingName = name;
         Invalidate();
 
-        const std::wstring id = g_rows[static_cast<size_t>(index)].id;
         std::thread([id, index]()
         {
             int rc = -1;
@@ -850,7 +877,6 @@ namespace
                 const std::string utf8 = ToUtf8(id);
                 rc = btc_open_device(utf8.c_str());
             }
-            btlog::Write(L"connect finished");
             if (g_hwnd)
             {
                 ::PostMessageW(g_hwnd, kConnectDone, static_cast<WPARAM>(rc),
@@ -859,9 +885,19 @@ namespace
         }).detach();
     }
 
+    void BeginConnect(int index)
+    {
+        if (index < 0 || index >= static_cast<int>(g_rows.size()))
+        {
+            return;
+        }
+        BeginConnectById(g_rows[static_cast<size_t>(index)].id,
+                         g_rows[static_cast<size_t>(index)].name, index);
+    }
+
     void BeginDisconnect()
     {
-        if (g_busy || g_active < 0)
+        if (g_busy || g_activeId.empty())
         {
             return;
         }
@@ -916,11 +952,7 @@ namespace
 
     void ApplyScanResult(DeviceList const& devices)
     {
-        std::wstring activeId;
-        if (g_active >= 0 && g_active < static_cast<int>(g_rows.size()))
-        {
-            activeId = g_rows[static_cast<size_t>(g_active)].id;
-        }
+        const std::wstring activeId = g_activeId;
 
         g_rows.clear();
         g_active = -1;
@@ -1126,6 +1158,24 @@ namespace
             BeginDisconnect();
             return;
         default:
+            if (cmd >= tray::CmdRecentBase)
+            {
+                const size_t index = static_cast<size_t>(cmd - tray::CmdRecentBase);
+                if (index < g_recent.size())
+                {
+                    const settings::RecentDevice device = g_recent[index];
+                    int rowIndex = -1;
+                    for (size_t k = 0; k < g_rows.size(); ++k)
+                    {
+                        if (g_rows[k].id == device.id)
+                        {
+                            rowIndex = static_cast<int>(k);
+                            break;
+                        }
+                    }
+                    BeginConnectById(device.id, device.name, rowIndex);
+                }
+            }
             return;
         }
     }
@@ -1247,23 +1297,39 @@ namespace
             const int rc = static_cast<int>(wParam);
             const int index = static_cast<int>(lParam);
             g_busy = false;
-            if (index >= 0 && index < static_cast<int>(g_rows.size()))
+
+            if (rc == 0)
             {
-                if (rc == 0)
+                g_active = index;
+                g_activeId = g_pendingId;
+                g_activeName = g_pendingName;
+                if (index >= 0 && index < static_cast<int>(g_rows.size()))
                 {
                     g_rows[static_cast<size_t>(index)].state = RowState::Connected;
-                    g_active = index;
                     g_selected = index;
-                    btlog::Write(L"connected");
                 }
-                else
+                if (!g_activeId.empty())
+                {
+                    settings::PushRecent(g_recent, g_activeId, g_activeName);
+                    settings::SaveRecent(g_recent);
+                }
+                btlog::Write(L"connected");
+            }
+            else
+            {
+                if (index >= 0 && index < static_cast<int>(g_rows.size()))
                 {
                     g_rows[static_cast<size_t>(index)].state = RowState::Failed;
                     g_rows[static_cast<size_t>(index)].failCode = rc;
-                    g_active = -1;
-                    btlog::Write(L"connect failed");
                 }
+                g_active = -1;
+                g_activeId.clear();
+                g_activeName.clear();
+                btlog::Write(L"connect failed");
             }
+
+            g_pendingId.clear();
+            g_pendingName.clear();
             UpdateTray();
             Invalidate();
             return 0;
@@ -1276,6 +1342,8 @@ namespace
                 g_rows[static_cast<size_t>(g_active)].state = RowState::Disconnected;
             }
             g_active = -1;
+            g_activeId.clear();
+            g_activeName.clear();
             UpdateTray();
             Invalidate();
             return 0;
@@ -1309,6 +1377,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
     const CliOptions cli = ParseCommandLine();
 
     settings::Current() = settings::Load();
+    g_recent = settings::LoadRecent();
     texts::SetByCode(settings::Current().language);
 
     btlog::Sink sink = btlog::Sink::None;
@@ -1332,6 +1401,12 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
     }
     btlog::Start(sink, logPath);
     btlog::Write(L"BTAudioReceiver (win32) starting");
+    {
+        wchar_t recentInfo[64]{};
+        swprintf_s(recentInfo, L"recent devices loaded: %d",
+                   static_cast<int>(g_recent.size()));
+        btlog::Write(recentInfo);
+    }
 
     if (!single::Acquire())
     {
