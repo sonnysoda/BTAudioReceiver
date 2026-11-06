@@ -96,15 +96,22 @@ namespace
     int g_hoverIndex = -1;
     HCURSOR g_hand{ nullptr };
 
-    // ---- 设置面板（居中模态，瞬时出现，不做动画）----
+    // ---- 设置面板（居中模态）----
     bool g_panelOpen = false;
+    float g_panelScale{ 1.0f };        // 0.94 → 1.0
+    float g_panelAlpha{ 1.0f };        // 0 → 1（遮罩与内容一起淡入）
+    ULONGLONG g_panelAnimStart{ 0 };
+    bool g_panelAnimating{ false };
+
+    // ---- 按压反馈 ----
+    int g_pressedKind{ 0 };            // 与 g_hoverKind 同义
+    int g_pressedIndex{ -1 };
 
     FRect g_rcPanel{};
     FRect g_rcPanelClose{};
     FRect g_rcLang[2]{};
     FRect g_rcTheme[3]{};
     FRect g_rcReset{};
-    int g_hoverPanelItem{ 0 };      // 0=无 1=关闭 2..3=语言 4..6=外观 7=重置
 
     // ---- 折返滚动 ----
     bool g_metricsDirty{ true };
@@ -130,6 +137,8 @@ namespace
     ComPtr<ID2D1SolidColorBrush> g_brOnAccent;
     ComPtr<ID2D1SolidColorBrush> g_brScrim;
     ComPtr<ID2D1SolidColorBrush> g_brPanel;
+    ComPtr<ID2D1SolidColorBrush> g_brPress;        // 按压时压暗
+    ComPtr<ID2D1SolidColorBrush> g_brPanelBorder;  // 面板描边（强调色低透明）
 
     // ---------------- 字符串转换 ----------------
     std::string ToUtf8(std::wstring const& s)
@@ -229,6 +238,12 @@ namespace
     }
 
     // ---------------- 排版 ----------------
+    float EaseOutCubic(float t)
+    {
+        const float u = 1.0f - t;
+        return 1.0f - u * u * u;
+    }
+
     // 折返滚动：停留 → 左移到底 → 停留 → 退回，循环
     float MarqueeOffset(float overflow, double seconds)
     {
@@ -408,7 +423,8 @@ namespace
                       D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
     }
 
-    void DrawButton(FRect const& rc, const wchar_t* label, bool accent, bool hover, bool enabled)
+    void DrawButton(FRect const& rc, const wchar_t* label, bool accent, bool hover, bool enabled,
+                    bool pressed)
     {
         ID2D1Brush* fill = accent ? g_brAccent.Get() : (hover ? g_brBtnHover.Get() : g_brBtnFace.Get());
         ID2D1Brush* text = accent ? g_brOnAccent.Get() : g_brPrimary.Get();
@@ -421,14 +437,38 @@ namespace
         }
 
         FillRound(rc, 6.0f, fill, stroke);
-        DrawTextIn(label, g_fmtButton.Get(), text, rc);
+
+        // 按下：压暗 + 文字下沉 1px，制造"被按进去"的手感
+        if (pressed && enabled)
+        {
+            FillRound(rc, 6.0f, g_brPress.Get(), nullptr);
+        }
+
+        FRect textRect = rc;
+        if (pressed && enabled)
+        {
+            textRect.t += 1.0f;
+            textRect.b += 1.0f;
+        }
+        DrawTextIn(label, g_fmtButton.Get(), text, textRect);
     }
 
-    void DrawSegment(FRect const& rc, const wchar_t* label, bool selected)
+    void DrawSegment(FRect const& rc, const wchar_t* label, bool selected, bool pressed)
     {
         FillRound(rc, 6.0f, selected ? g_brAccentSoft.Get() : g_brBtnFace.Get(),
                   selected ? g_brAccent.Get() : g_brStroke.Get());
-        DrawTextIn(label, g_fmtButton.Get(), selected ? g_brAccent.Get() : g_brPrimary.Get(), rc);
+        if (pressed)
+        {
+            FillRound(rc, 6.0f, g_brPress.Get(), nullptr);
+        }
+        FRect textRect = rc;
+        if (pressed)
+        {
+            textRect.t += 1.0f;
+            textRect.b += 1.0f;
+        }
+        DrawTextIn(label, g_fmtButton.Get(), selected ? g_brAccent.Get() : g_brPrimary.Get(),
+                   textRect);
     }
 
     const wchar_t* RowStatusText(Row const& row, wchar_t* buffer, size_t count)
@@ -545,50 +585,68 @@ namespace
             if (hit.hasDisc)
             {
                 const bool hover = (g_hoverKind == 4 && g_hoverIndex == hit.index);
-                DrawButton(hit.disc, texts::BtnDisconnect(), false, hover, true);
+                const bool pressed = (g_pressedKind == 4 && g_pressedIndex == hit.index);
+                DrawButton(hit.disc, texts::BtnDisconnect(), false, hover, true, pressed);
             }
         }
 
-        DrawButton(g_rcSettings, texts::BtnSettings(), false, g_hoverKind == 1, true);
-        DrawButton(g_rcRefresh, texts::BtnRefresh(), false, g_hoverKind == 2,
-                   !g_scanning && !g_busy);
+        DrawButton(g_rcSettings, texts::BtnSettings(), false, g_hoverKind == 1 || g_panelOpen, true,
+                   g_pressedKind == 1);
+        DrawButton(g_rcRefresh, texts::BtnRefresh(), false, g_hoverKind == 2, !g_scanning && !g_busy,
+                   g_pressedKind == 2);
 
         const bool canConnect = (g_selected >= 0 && g_selected != g_active && !g_busy &&
                                  g_selected < static_cast<int>(g_rows.size()));
-        DrawButton(g_rcConnect, texts::BtnConnect(), true, g_hoverKind == 3, canConnect);
+        DrawButton(g_rcConnect, texts::BtnConnect(), true, g_hoverKind == 3, canConnect,
+                   g_pressedKind == 3);
 
         // ---- 设置面板 ----
-        if (g_panelOpen)
+        if (g_panelOpen || g_panelAlpha > 0.001f)
         {
             if (g_brScrim)
             {
+                g_brScrim->SetOpacity(g_panelAlpha);
                 rt->FillRectangle(D2D1::RectF(0.0f, 0.0f, size.width, size.height),
                                   g_brScrim.Get());
+                g_brScrim->SetOpacity(1.0f);
             }
 
-            FillRound(g_rcPanel, 12.0f, g_brPanel.Get(), g_brStroke.Get());
+            // 轻微缩放（0.94 → 1.0），以面板中心为原点
+            const float cx = (g_rcPanel.l + g_rcPanel.r) * 0.5f;
+            const float cy = (g_rcPanel.t + g_rcPanel.b) * 0.5f;
+            rt->SetTransform(
+                D2D1::Matrix3x2F::Scale(g_panelScale, g_panelScale, D2D1::Point2F(cx, cy)));
+
+            FillRound(g_rcPanel, 12.0f, g_brPanel.Get(), g_brPanelBorder.Get());
 
             DrawTextIn(texts::PanelTitle(), g_fmtPanelTitle.Get(), g_brPrimary.Get(),
                        FRect{ g_rcPanel.l + kPad, g_rcPanel.t + 14.0f, g_rcPanel.r - kPad - 30.0f,
                               g_rcPanel.t + 38.0f });
-            DrawTextIn(L"\u2715", g_fmtButton.Get(), g_brSecondary.Get(), g_rcPanelClose);
+            DrawTextIn(L"\u2715", g_fmtButton.Get(),
+                       g_hoverKind == 5 ? g_brPrimary.Get() : g_brSecondary.Get(), g_rcPanelClose);
 
             DrawTextIn(texts::LabelLanguage(), g_fmtCaption.Get(), g_brSecondary.Get(),
                        FRect{ g_rcPanel.l + kPad, g_rcPanel.t + 46.0f, g_rcPanel.r - kPad,
                               g_rcPanel.t + 66.0f });
             const bool zhSelected = (settings::Current().language != L"en");
-            DrawSegment(g_rcLang[0], texts::LangZh(), zhSelected);
-            DrawSegment(g_rcLang[1], texts::LangEn(), !zhSelected);
+            DrawSegment(g_rcLang[0], texts::LangZh(), zhSelected, g_pressedKind == 11);
+            DrawSegment(g_rcLang[1], texts::LangEn(), !zhSelected, g_pressedKind == 12);
 
             DrawTextIn(texts::LabelTheme(), g_fmtCaption.Get(), g_brSecondary.Get(),
                        FRect{ g_rcPanel.l + kPad, g_rcPanel.t + 110.0f, g_rcPanel.r - kPad,
                               g_rcPanel.t + 130.0f });
             const std::wstring& currentTheme = settings::Current().theme;
-            DrawSegment(g_rcTheme[0], texts::ThemeLight(), currentTheme == L"light");
-            DrawSegment(g_rcTheme[1], texts::ThemeDark(), currentTheme == L"dark");
-            DrawSegment(g_rcTheme[2], texts::ThemeSystem(), currentTheme == L"system");
+            DrawSegment(g_rcTheme[0], texts::ThemeLight(), currentTheme == L"light",
+                        g_pressedKind == 21);
+            DrawSegment(g_rcTheme[1], texts::ThemeDark(), currentTheme == L"dark",
+                        g_pressedKind == 22);
+            DrawSegment(g_rcTheme[2], texts::ThemeSystem(), currentTheme == L"system",
+                        g_pressedKind == 23);
 
-            DrawButton(g_rcReset, texts::BtnReset(), false, g_hoverPanelItem == 7, true);
+            DrawButton(g_rcReset, texts::BtnReset(), false, g_hoverKind == 6, true,
+                       g_pressedKind == 6);
+
+            rt->SetTransform(D2D1::Matrix3x2F::Identity());
         }
 
         gfx::EndDraw();
@@ -693,6 +751,16 @@ namespace
         rt->CreateSolidColorBrush(g_theme.dark ? D2D1::ColorF(0.17f, 0.17f, 0.17f)
                                               : D2D1::ColorF(1.0f, 1.0f, 1.0f),
                                   &g_brPanel);
+
+        g_brPress.Reset();
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.14f), &g_brPress);
+
+        g_brPanelBorder.Reset();
+        rt->CreateSolidColorBrush(g_theme.accent, &g_brPanelBorder);
+        if (g_brPanelBorder)
+        {
+            g_brPanelBorder->SetOpacity(0.45f);
+        }
     }
 
     void ApplyTheme()
@@ -736,6 +804,17 @@ namespace
             return;
         }
         g_panelOpen = open;
+        g_panelAnimStart = ::GetTickCount64();
+        g_panelAnimating = true;
+        if (open)
+        {
+            g_panelScale = 0.94f;
+            g_panelAlpha = 0.0f;
+        }
+        if (g_hwnd)
+        {
+            ::SetTimer(g_hwnd, 1, 12, nullptr);
+        }
         Invalidate();
     }
 
@@ -901,43 +980,57 @@ namespace
     }
 
     // ---------------- 命中测试 ----------------
+    // 返回值即 g_hoverKind 的取值：
+    //   0=无（配合 g_hoverIndex 表示设备行） 1=设置 2=刷新 3=连接 4=行内断开
+    //   5=面板关闭 6=重置 8=面板空白 11/12=语言 21/22/23=外观
+    int HitTestKind(float x, float y, int* rowIndex)
+    {
+        if (rowIndex)
+        {
+            *rowIndex = -1;
+        }
+
+        if (g_panelOpen)
+        {
+            if (Contains(g_rcPanelClose, x, y)) return 5;
+            if (Contains(g_rcLang[0], x, y)) return 11;
+            if (Contains(g_rcLang[1], x, y)) return 12;
+            if (Contains(g_rcTheme[0], x, y)) return 21;
+            if (Contains(g_rcTheme[1], x, y)) return 22;
+            if (Contains(g_rcTheme[2], x, y)) return 23;
+            if (Contains(g_rcReset, x, y)) return 6;
+            if (Contains(g_rcPanel, x, y)) return 8;
+            return 0;
+        }
+
+        if (Contains(g_rcSettings, x, y)) return 1;
+        if (Contains(g_rcRefresh, x, y)) return 2;
+        if (Contains(g_rcConnect, x, y)) return 3;
+
+        for (RowHit const& hit : g_rowHits)
+        {
+            if (hit.hasDisc && Contains(hit.disc, x, y))
+            {
+                if (rowIndex) *rowIndex = hit.index;
+                return 4;
+            }
+            if (Contains(hit.rect, x, y))
+            {
+                if (rowIndex) *rowIndex = hit.index;
+                return 0;
+            }
+        }
+        return 0;
+    }
+
     void UpdateHover(float x, float y)
     {
         const int prevKind = g_hoverKind;
         const int prevIndex = g_hoverIndex;
 
-        g_hoverKind = 0;
-        g_hoverIndex = -1;
-
-        if (Contains(g_rcSettings, x, y))
-        {
-            g_hoverKind = 1;
-        }
-        else if (Contains(g_rcRefresh, x, y))
-        {
-            g_hoverKind = 2;
-        }
-        else if (Contains(g_rcConnect, x, y))
-        {
-            g_hoverKind = 3;
-        }
-        else
-        {
-            for (RowHit const& hit : g_rowHits)
-            {
-                if (hit.hasDisc && Contains(hit.disc, x, y))
-                {
-                    g_hoverKind = 4;
-                    g_hoverIndex = hit.index;
-                    break;
-                }
-                if (Contains(hit.rect, x, y))
-                {
-                    g_hoverIndex = hit.index;
-                    break;
-                }
-            }
-        }
+        int rowIndex = -1;
+        g_hoverKind = HitTestKind(x, y, &rowIndex);
+        g_hoverIndex = rowIndex;
 
         if (g_hoverKind != prevKind || g_hoverIndex != prevIndex)
         {
@@ -945,83 +1038,95 @@ namespace
         }
     }
 
-    void OnClick(float x, float y)
+    void ActivateHover()
     {
-        // 面板打开时，点击只作用于面板
-        if (g_panelOpen)
+        switch (g_hoverKind)
         {
-            if (Contains(g_rcPanelClose, x, y))
-            {
-                SetPanelOpen(false);
-                return;
-            }
-            if (Contains(g_rcLang[0], x, y))
-            {
-                ApplyLanguageChoice(L"zh");
-                return;
-            }
-            if (Contains(g_rcLang[1], x, y))
-            {
-                ApplyLanguageChoice(L"en");
-                return;
-            }
-            if (Contains(g_rcTheme[0], x, y))
-            {
-                ApplyThemeChoice(L"light");
-                return;
-            }
-            if (Contains(g_rcTheme[1], x, y))
-            {
-                ApplyThemeChoice(L"dark");
-                return;
-            }
-            if (Contains(g_rcTheme[2], x, y))
-            {
-                ApplyThemeChoice(L"system");
-                return;
-            }
-            if (Contains(g_rcReset, x, y))
-            {
-                DoResetSettings();
-                return;
-            }
-            if (!Contains(g_rcPanel, x, y))
-            {
-                SetPanelOpen(false);
-            }
-            return;
-        }
-
-        if (Contains(g_rcSettings, x, y))
-        {
+        case 1:
             SetPanelOpen(true);
-            return;
-        }
-        if (Contains(g_rcRefresh, x, y))
-        {
+            break;
+        case 2:
             StartScan();
-            return;
-        }
-        if (Contains(g_rcConnect, x, y))
-        {
+            break;
+        case 3:
             BeginConnect(g_selected);
-            return;
+            break;
+        case 4:
+            BeginDisconnect();
+            break;
+        case 5:
+            SetPanelOpen(false);
+            break;
+        case 6:
+            DoResetSettings();
+            break;
+        case 11:
+            ApplyLanguageChoice(L"zh");
+            break;
+        case 12:
+            ApplyLanguageChoice(L"en");
+            break;
+        case 21:
+            ApplyThemeChoice(L"light");
+            break;
+        case 22:
+            ApplyThemeChoice(L"dark");
+            break;
+        case 23:
+            ApplyThemeChoice(L"system");
+            break;
+        default:
+            break;
+        }
+    }
+
+    void OnMouseDown(float x, float y)
+    {
+        UpdateHover(x, y);
+        g_pressedKind = g_hoverKind;
+        g_pressedIndex = g_hoverIndex;
+        if (g_hwnd)
+        {
+            ::SetCapture(g_hwnd);
+        }
+        Invalidate();
+    }
+
+    void OnMouseUp(float x, float y)
+    {
+        const int pressedKind = g_pressedKind;
+        const int pressedIndex = g_pressedIndex;
+
+        g_pressedKind = 0;
+        g_pressedIndex = -1;
+        if (g_hwnd)
+        {
+            ::ReleaseCapture();
         }
 
-        for (RowHit const& hit : g_rowHits)
+        UpdateHover(x, y);
+
+        // 只有按下与松开落在同一个目标上才算点击
+        if (pressedKind == g_hoverKind && pressedIndex == g_hoverIndex)
         {
-            if (hit.hasDisc && Contains(hit.disc, x, y))
+            if (pressedKind == 0)
             {
-                BeginDisconnect();
-                return;
+                if (pressedIndex >= 0)
+                {
+                    g_selected = pressedIndex;
+                }
+                else if (g_panelOpen)
+                {
+                    SetPanelOpen(false);
+                }
             }
-            if (Contains(hit.rect, x, y))
+            else if (pressedKind != 8)
             {
-                g_selected = hit.index;
-                Invalidate();
-                return;
+                ActivateHover();
             }
         }
+
+        Invalidate();
     }
 
     float ToDipX(LPARAM lParam)
@@ -1091,7 +1196,7 @@ namespace
             return 0;
 
         case WM_SETCURSOR:
-            if (LOWORD(lParam) == HTCLIENT && g_hoverKind != 0)
+            if (LOWORD(lParam) == HTCLIENT && g_hoverKind != 0 && g_hoverKind != 8)
             {
                 ::SetCursor(g_hand);
                 return TRUE;
@@ -1099,7 +1204,20 @@ namespace
             break;
 
         case WM_LBUTTONDOWN:
-            OnClick(ToDipX(lParam), ToDipY(lParam));
+            OnMouseDown(ToDipX(lParam), ToDipY(lParam));
+            return 0;
+
+        case WM_LBUTTONUP:
+            OnMouseUp(ToDipX(lParam), ToDipY(lParam));
+            return 0;
+
+        case WM_CAPTURECHANGED:
+            if (g_pressedKind != 0 || g_pressedIndex >= 0)
+            {
+                g_pressedKind = 0;
+                g_pressedIndex = -1;
+                Invalidate();
+            }
             return 0;
 
         case WM_MOUSEWHEEL:
@@ -1131,6 +1249,38 @@ namespace
             break;
 
         case WM_TIMER:
+            if (wParam == 1)
+            {
+                const ULONGLONG elapsed = ::GetTickCount64() - g_panelAnimStart;
+                float t = static_cast<float>(elapsed) / 140.0f;
+                if (t > 1.0f)
+                {
+                    t = 1.0f;
+                }
+                const float eased = EaseOutCubic(t);
+                if (g_panelOpen)
+                {
+                    g_panelScale = 0.94f + 0.06f * eased;
+                    g_panelAlpha = eased;
+                }
+                else
+                {
+                    g_panelScale = 1.0f - 0.04f * eased;
+                    g_panelAlpha = 1.0f - eased;
+                }
+                if (t >= 1.0f)
+                {
+                    g_panelAnimating = false;
+                    ::KillTimer(hwnd, 1);
+                    if (!g_panelOpen)
+                    {
+                        g_panelScale = 1.0f;
+                        g_panelAlpha = 0.0f;
+                    }
+                }
+                Invalidate();
+                return 0;
+            }
             if (wParam == 2)
             {
                 const ULONGLONG now = ::GetTickCount64();
