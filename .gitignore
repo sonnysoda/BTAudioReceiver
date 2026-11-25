@@ -1,5 +1,6 @@
 # ---------- 构建产物 ----------
-app/x64/
+# Visual Studio 会把中间目录建在工程旁边，层级不固定
+x64/
 app/obj/
 app/Generated Files/
 app/*.VC.db
@@ -12,6 +13,12 @@ app/*.VC.VC.opendb
 *.iobj
 *.ipdb
 *.exp
+*.lib
+*.res
+*.pch
+# 资源编辑器缓存：双击 app.rc 编辑后 VS 会生成 app.aps（二进制，且含绝对路径）
+*.aps
+ipch/
 *.tlog
 *.lastbuildstate
 *.idb
@@ -23,19 +30,31 @@ app/*.VC.VC.opendb
 
 # ---------- Rust ----------
 core/target/
+*.rlib
+*.rmeta
 
 # ---------- 打包 / 产物目录 ----------
 dist/
 *.zip
+*.7z
 
-# ---------- 日志 ----------
+# ---------- 日志与追踪 ----------
 *.log
+*.etl
 
 # ---------- Visual Studio / 编辑器 ----------
 .vs/
 *.suo
 *.user
 .vscode/
+.idea/
+*.swp
+*~
+
+# ---------- 合并冲突 / 备份残留 ----------
+*.orig
+*.rej
+*.bak
 
 # ---------- 系统 ----------
 Thumbs.db
