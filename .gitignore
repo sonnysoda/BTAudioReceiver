@@ -56,6 +56,18 @@ dist/
 *.rej
 *.bak
 
+# ---------- 诊断 / 分析产物 ----------
+*.dmp
+*.psess
+*.vsp
+*.vspx
+TestResults/
+
+# ---------- 工具链缓存 ----------
+.clangd/
+compile_commands.json
+.cache/
+
 # ---------- 系统 ----------
 Thumbs.db
 desktop.ini
