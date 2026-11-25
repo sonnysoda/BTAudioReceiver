@@ -1,0 +1,43 @@
+﻿// app.rc — 版本资源与应用图标
+//
+// 图标用 app.ico（6 个尺寸，PNG 压缩 payload）。资源 ID 取 1，
+// 这样资源管理器、任务栏、UAC 都直接取它作为 exe 图标。
+//
+// 版本号需要和发布标签保持一致：改版本时同时改 FILEVERSION / PRODUCTVERSION
+// 和下面的字符串值。
+
+#pragma code_page(65001)
+
+#include <winver.h>
+
+1 ICON "app.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    0,2,1,0
+ PRODUCTVERSION 0,2,1,0
+ FILEFLAGSMASK  0x3fL
+ FILEFLAGS      0x0L
+ FILEOS         0x40004L
+ FILETYPE       0x1L
+ FILESUBTYPE    0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName",      "sonnysoda"
+            VALUE "FileDescription",  "蓝牙音频接收器"
+            VALUE "FileVersion",      "0.2.1.0"
+            VALUE "InternalName",     "BTAudioReceiver"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 sonnysoda. MIT License."
+            VALUE "OriginalFilename", "BTAudioReceiver.exe"
+            VALUE "ProductName",      "BTAudioReceiver"
+            VALUE "ProductVersion",   "0.2.1.0"
+            VALUE "Comments",         "Windows A2DP Sink receiver"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END
