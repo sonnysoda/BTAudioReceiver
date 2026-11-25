@@ -26,6 +26,15 @@ namespace
     constexpr UINT kScanDone = WM_APP + 12;
     constexpr UINT kConnectDone = WM_APP + 13;
     constexpr UINT kDisconnectDone = WM_APP + 14;
+    constexpr UINT kStateChanged = WM_APP + 15;
+    constexpr UINT kReconnectDone = WM_APP + 16;
+
+    // 断线重连参数
+    constexpr UINT kTimerReconnect = 3;
+    constexpr ULONGLONG kReconnectWindowMs = 30000; // 总窗口：超过就放弃
+    constexpr ULONGLONG kReconnectTryMs = 8000;     // 单轮 Open 超时
+    constexpr ULONGLONG kReconnectGapMs = 2000;     // 两轮之间间隔
+    constexpr UINT kReconnectTickMs = 250;          // 倒计时刷新粒度
 
     constexpr float kWidth = 480.0f;
     constexpr float kHeight = 660.0f;
@@ -45,6 +54,7 @@ namespace
         Idle,
         Connecting,
         Connected,
+        Reconnecting,
         Disconnected,
         Failed
     };
@@ -93,6 +103,22 @@ namespace
     // 正在连接的设备（连接在工作线程，回调时用）
     std::wstring g_pendingId;
     std::wstring g_pendingName;
+
+    // ---- 断线重连窗口 ----
+    // 对端断开后先不销毁连接对象，开一个 30 秒窗口反复尝试；
+    // 窗口耗尽才 Close，这样既给对端留出回连机会，又不会长期占用 A2DP 端点。
+    bool g_reconnecting = false;      // 窗口是否开启
+    bool g_reconnectInFlight = false; // 是否有一轮尝试在跑
+    unsigned g_reconnectGen = 0;      // 代际：取消/换设备时自增，用于丢弃过期回调
+    ULONGLONG g_reconnectDeadline = 0;
+    ULONGLONG g_reconnectLastTry = 0;
+    int g_reconnectRemainSec = 0;
+    int g_reconnectRow = -1;
+    std::wstring g_reconnectId;
+    std::wstring g_reconnectName;
+
+    // 主动 Close 时内核还会回一个 Closed 事件，若不屏蔽会被误判成“对端断开”
+    ULONGLONG g_ignoreClosedUntil = 0;
 
     // 最近连接的设备，最多 3 条
     std::vector<settings::RecentDevice> g_recent;
@@ -316,7 +342,8 @@ namespace
             hit.index = index;
             const float top = kListTop + static_cast<float>(i) * (kRowHeight + kRowGap);
             hit.rect = FRect{ kPad, top, right, top + kRowHeight };
-            if (g_rows[static_cast<size_t>(index)].state == RowState::Connected)
+            if (g_rows[static_cast<size_t>(index)].state == RowState::Connected ||
+                g_rows[static_cast<size_t>(index)].state == RowState::Reconnecting)
             {
                 hit.hasDisc = true;
                 hit.disc = FRect{ right - 8.0f - 68.0f, top + 14.0f, right - 8.0f, top + 42.0f };
@@ -480,9 +507,16 @@ namespace
             return texts::RowConnecting();
         case RowState::Connected:
             return texts::RowConnected();
+        case RowState::Reconnecting:
+            swprintf_s(buffer, count, texts::RowReconnectingFmt(), g_reconnectRemainSec);
+            return buffer;
         case RowState::Disconnected:
             return texts::RowDisconnected();
         case RowState::Failed:
+            if (row.failCode == -5)
+            {
+                return texts::RowTimeout();
+            }
             swprintf_s(buffer, count, texts::RowFailedFmt(), row.failCode);
             return buffer;
         default:
@@ -519,6 +553,10 @@ namespace
         if (g_scanning)
         {
             status = texts::StateScanning();
+        }
+        else if (g_reconnecting)
+        {
+            status = texts::StateReconnecting();
         }
         else if (!g_activeId.empty())
         {
@@ -786,6 +824,215 @@ namespace
         tray::Update(data);
     }
 
+    // ---------------- 内核事件 ----------------
+
+    void Invalidate();
+
+    // 回调来自 WinRT 线程，这里只做封送，所有状态变更都回 UI 线程做
+    extern "C" void OnCoreEvent(int32_t code, int32_t state, const char* payload, void* /*user*/)
+    {
+        if (g_hwnd == nullptr)
+        {
+            return;
+        }
+        if (code == BTC_EVENT_STATE_CHANGED)
+        {
+            ::PostMessageW(g_hwnd, kStateChanged, static_cast<WPARAM>(state), 0);
+        }
+        else if (code == BTC_EVENT_ERROR && payload != nullptr)
+        {
+            btlog::Write(L"core: " + FromUtf8(payload));
+        }
+    }
+
+    // 结束重连窗口。closeNow 为真且确实处在窗口中时才真正关闭连接对象——
+    // 不在窗口里就什么都不做，交给调用方按原路径处理。
+    void CancelReconnect(bool closeNow)
+    {
+        const bool wasActive = g_reconnecting || g_reconnectInFlight;
+        g_reconnectGen++; // 让在途那一轮的结果作废
+        g_reconnecting = false;
+        g_reconnectInFlight = false;
+        g_reconnectRemainSec = 0;
+        if (g_hwnd)
+        {
+            ::KillTimer(g_hwnd, kTimerReconnect);
+        }
+        if (closeNow && wasActive && btc_init() == 0)
+        {
+            // 我们自己关的，接下来那个 Closed 事件不能当成“对端断开”
+            g_ignoreClosedUntil = ::GetTickCount64() + 800;
+            btc_close_device();
+        }
+        g_reconnectId.clear();
+        g_reconnectName.clear();
+        g_reconnectRow = -1;
+    }
+
+    void TryReconnectOnce()
+    {
+        if (!g_reconnecting || g_reconnectInFlight)
+        {
+            return;
+        }
+        g_reconnectInFlight = true;
+        g_reconnectLastTry = ::GetTickCount64();
+        const unsigned gen = g_reconnectGen;
+
+        std::thread([gen]()
+        {
+            int rc = -1;
+            if (btc_init() == 0)
+            {
+                rc = btc_reopen(static_cast<int32_t>(kReconnectTryMs));
+            }
+            if (g_hwnd)
+            {
+                ::PostMessageW(g_hwnd, kReconnectDone, static_cast<WPARAM>(rc),
+                               static_cast<LPARAM>(gen));
+            }
+        }).detach();
+    }
+
+    // 重连成功后的统一收口。调用方负责保证此时窗口仍有效。
+    void FinishReconnect()
+    {
+        const std::wstring name = g_reconnectName;
+        const int row = g_reconnectRow;
+
+        g_reconnecting = false;
+        g_reconnectInFlight = false;
+        g_reconnectRemainSec = 0;
+        if (g_hwnd)
+        {
+            ::KillTimer(g_hwnd, kTimerReconnect);
+        }
+
+        g_active = row;
+        g_activeId = g_reconnectId;
+        g_activeName = g_reconnectName;
+        if (row >= 0 && row < static_cast<int>(g_rows.size()))
+        {
+            g_rows[static_cast<size_t>(row)].state = RowState::Connected;
+            g_selected = row;
+        }
+        if (!g_activeId.empty())
+        {
+            settings::PushRecent(g_recent, g_activeId, g_activeName);
+            settings::SaveRecent(g_recent);
+        }
+
+        g_reconnectId.clear();
+        g_reconnectName.clear();
+        g_reconnectRow = -1;
+
+        btlog::Write(L"reconnected: " + name);
+        UpdateTray();
+        Invalidate();
+    }
+
+    void OnReconnectResult(int rc, unsigned gen)
+    {
+        if (!g_reconnecting || gen != g_reconnectGen)
+        {
+            return; // 过期结果：窗口已关或已换设备
+        }
+        g_reconnectInFlight = false;
+
+        if (rc == -1)
+        {
+            // 连接对象已经不存在了，再试也没用：把 deadline 清零，下一拍直接放弃
+            btlog::Write(L"reconnect aborted: connection object gone");
+            g_reconnectDeadline = 0;
+            return;
+        }
+        if (rc != 0)
+        {
+            btlog::Write(L"reconnect attempt failed");
+            return; // 失败不在这里重试，交给定时器控制节奏
+        }
+        FinishReconnect();
+    }
+
+    void OnReconnectTimer()
+    {
+        if (!g_reconnecting)
+        {
+            if (g_hwnd)
+            {
+                ::KillTimer(g_hwnd, kTimerReconnect);
+            }
+            return;
+        }
+
+        const ULONGLONG now = ::GetTickCount64();
+        if (now >= g_reconnectDeadline)
+        {
+            // 窗口耗尽：放弃，这时才真正释放连接对象
+            const int row = g_reconnectRow;
+            const std::wstring name = g_reconnectName;
+
+            CancelReconnect(true);
+
+            if (row >= 0 && row < static_cast<int>(g_rows.size()))
+            {
+                g_rows[static_cast<size_t>(row)].state = RowState::Disconnected;
+                g_selected = row;
+            }
+            g_active = -1;
+            g_activeId.clear();
+            g_activeName.clear();
+
+            btlog::Write(L"reconnect gave up: " + name);
+            UpdateTray();
+            Invalidate();
+            return;
+        }
+
+        g_reconnectRemainSec = static_cast<int>((g_reconnectDeadline - now + 999) / 1000);
+
+        if (!g_reconnectInFlight && now - g_reconnectLastTry >= kReconnectGapMs)
+        {
+            TryReconnectOnce();
+        }
+        Invalidate();
+    }
+
+    // 对端（手机）主动断开：开重连窗口，而不是立刻清掉一切
+    void BeginReconnect()
+    {
+        if (g_activeId.empty())
+        {
+            return;
+        }
+
+        g_reconnecting = true;
+        g_reconnectGen++;
+        g_reconnectId = g_activeId;
+        g_reconnectName = g_activeName;
+        g_reconnectRow = g_active;
+        g_reconnectDeadline = ::GetTickCount64() + kReconnectWindowMs;
+        g_reconnectLastTry = 0;
+        g_reconnectInFlight = false;
+        g_reconnectRemainSec = static_cast<int>(kReconnectWindowMs / 1000);
+
+        if (g_reconnectRow >= 0 && g_reconnectRow < static_cast<int>(g_rows.size()))
+        {
+            g_rows[static_cast<size_t>(g_reconnectRow)].state = RowState::Reconnecting;
+            g_selected = g_reconnectRow;
+        }
+        g_active = -1; // 当前没有活动连接，但 activeId 保留：界面与托盘仍需知道“谁在重连”
+
+        btlog::Write(L"reconnect window opened: " + g_reconnectName);
+        if (g_hwnd)
+        {
+            ::SetTimer(g_hwnd, kTimerReconnect, kReconnectTickMs, nullptr);
+        }
+        UpdateTray();
+        Invalidate();
+        TryReconnectOnce();
+    }
+
     // ---------------- 业务 ----------------
     void Invalidate()
     {
@@ -848,6 +1095,9 @@ namespace
             return;
         }
 
+        // 换设备（或重连窗口内手动连别的设备）：先中止窗口，别让旧定时器打断新连接
+        CancelReconnect(true);
+
         g_busy = true;
         for (auto& row : g_rows)
         {
@@ -901,6 +1151,28 @@ namespace
         {
             return;
         }
+
+        // 重连窗口内点断开：立即收尾，不另起工作线程
+        if (g_reconnecting || g_reconnectInFlight)
+        {
+            const int row = g_reconnectRow;
+            CancelReconnect(true);
+
+            if (row >= 0 && row < static_cast<int>(g_rows.size()))
+            {
+                g_rows[static_cast<size_t>(row)].state = RowState::Disconnected;
+                g_selected = row;
+            }
+            g_active = -1;
+            g_activeId.clear();
+            g_activeName.clear();
+
+            btlog::Write(L"reconnect cancelled by user");
+            UpdateTray();
+            Invalidate();
+            return;
+        }
+
         g_busy = true;
         Invalidate();
 
@@ -1268,6 +1540,11 @@ namespace
             break;
 
         case WM_TIMER:
+            if (wParam == kTimerReconnect)
+            {
+                OnReconnectTimer();
+                return 0;
+            }
             if (wParam == 2)
             {
                 const ULONGLONG now = ::GetTickCount64();
@@ -1346,6 +1623,36 @@ namespace
             g_activeName.clear();
             UpdateTray();
             Invalidate();
+            return 0;
+
+        case kStateChanged:
+        {
+            const int st = static_cast<int>(wParam);
+            // 重连窗口内对端自己连回来了，立即收口，不用等下一轮 reopen 的结果
+            if (st == BTC_STATE_OPENED && g_reconnecting)
+            {
+                FinishReconnect();
+                return 0;
+            }
+            // 连接/断开/重连进行中的状态抖动由各自的完成消息统一收口
+            if (g_busy || g_reconnecting)
+            {
+                return 0;
+            }
+            // 刚主动关掉连接时，回声事件不能当成对端断开
+            if (::GetTickCount64() < g_ignoreClosedUntil)
+            {
+                return 0;
+            }
+            if (st == BTC_STATE_CLOSED || st == BTC_STATE_NONE)
+            {
+                BeginReconnect();
+            }
+            return 0;
+        }
+
+        case kReconnectDone:
+            OnReconnectResult(static_cast<int>(wParam), static_cast<unsigned>(lParam));
             return 0;
 
         case kTrayCmd:
@@ -1462,6 +1769,9 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
     CreateFormats();
     ApplyTheme();
 
+    // 订阅内核状态事件：手机那侧断开时必须能第一时间知道，不能只靠本地状态
+    btc_set_event_callback(OnCoreEvent, nullptr);
+
     tray::Start(instance, [](int cmd)
     {
         if (g_hwnd)
@@ -1483,6 +1793,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
     }
 
     tray::Stop();
+    btc_close_device(); // 退出前主动断开，避免手机那侧仍显示已连接
     gfx::Shutdown();
     single::Release();
     return 0;

@@ -8,18 +8,36 @@
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use windows::core::{IInspectable, Ref, HSTRING};
 use windows::Devices::Enumeration::DeviceInformation;
 use windows::Foundation::TypedEventHandler;
-use windows::Media::Audio::{AudioPlaybackConnection, AudioPlaybackConnectionState};
+use windows::Media::Audio::{
+    AudioPlaybackConnection, AudioPlaybackConnectionOpenResultStatus, AudioPlaybackConnectionState,
+};
 use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
+use windows_future::AsyncStatus;
+
+/// OpenAsync 的最长等待时间。超过就认为对端不会响应，取消并报超时。
+/// 没有这个上限时，对端不在/不响应会让工作线程永远挂着，界面停在“正在连接”。
+const OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 
 type EventCb =
     unsafe extern "C" fn(code: i32, state: i32, payload: *const c_char, user: *mut c_void);
 
+/// windows-rs 没有为事件委托实现 Send，但它的本体只是一个 COM 指针。
+/// 我们只在注册它的线程上把它交给 WinRT，之后仅持有以保活，从不跨线程调用，
+/// 所以跨线程保管是安全的。
+#[allow(dead_code)] // 字段只用于持有 COM 引用，不被读取
+struct HandlerSlot(TypedEventHandler<AudioPlaybackConnection, IInspectable>);
+unsafe impl Send for HandlerSlot {}
+
 struct Inner {
     conn: Option<AudioPlaybackConnection>,
+    /// 事件委托与注册 token 必须保活：否则对象一旦释放就再也收不到 StateChanged
+    handler: Option<HandlerSlot>,
+    token: Option<i64>,
     cb: Option<EventCb>,
     user: usize,
 }
@@ -30,6 +48,8 @@ fn inner() -> &'static Mutex<Inner> {
     INNER.get_or_init(|| {
         Mutex::new(Inner {
             conn: None,
+            handler: None,
+            token: None,
             cb: None,
             user: 0,
         })
@@ -50,13 +70,20 @@ fn emit(code: i32, state: i32, msg: &str) {
 }
 
 fn close_internal() {
-    let old = {
+    // 先把三样东西从全局状态里摘出来，避免在持锁期间调用 COM
+    let (old, token, handler) = {
         let mut g = inner().lock().unwrap();
-        g.conn.take()
+        (g.conn.take(), g.token.take(), g.handler.take())
     };
+
     if let Some(c) = old {
+        // 先退订再 Close：否则 Close 自身导致的状态变化会再触发一次回调
+        if let Some(t) = token {
+            let _ = c.RemoveStateChanged(t);
+        }
         let _ = c.Close();
     }
+    drop(handler);
 }
 
 /// 读取当前连接状态，映射为 BtcState。
@@ -172,6 +199,70 @@ fn scan_lines() -> windows::core::Result<String> {
     Ok(out)
 }
 
+/// 在已存在的连接对象上做一次 Open，带超时。
+///
+/// 只负责“发起 + 等结果 + 判 Success”，**不碰全局状态、不销毁对象**，
+/// 失败回滚由调用方决定——`btc_open_device` 失败会重建，`btc_reopen` 失败必须保留对象，
+/// 因为端点一旦消失，对端就没法再连回来。
+///
+/// 返回 0 成功 / -3 Open 失败 / -5 超时
+fn open_with_timeout(conn: &AudioPlaybackConnection, timeout: Duration) -> i32 {
+    let op = match conn.OpenAsync() {
+        Ok(o) => o,
+        Err(e) => {
+            emit(3, -1, &format!("OpenAsync failed: {e}"));
+            return -3;
+        }
+    };
+
+    // 不用 join()：对端不在、不响应时它会一直挂住
+    let started = Instant::now();
+    loop {
+        match op.Status() {
+            Ok(AsyncStatus::Started) => {
+                if started.elapsed() >= timeout {
+                    let _ = op.Cancel();
+                    emit(
+                        3,
+                        -1,
+                        &format!("OpenAsync timed out after {}ms", timeout.as_millis()),
+                    );
+                    return -5;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => break,
+        }
+    }
+
+    let result = match op.GetResults() {
+        Ok(r) => r,
+        Err(e) => {
+            emit(3, -1, &format!("OpenAsync failed: {e}"));
+            return -3;
+        }
+    };
+
+    match result.Status() {
+        Ok(status) => {
+            if status != AudioPlaybackConnectionOpenResultStatus::Success {
+                let ext = result
+                    .ExtendedError()
+                    .map(|h| format!("{h:?}"))
+                    .unwrap_or_else(|_| "n/a".into());
+                emit(3, -1, &format!("Open status = {status:?}, extended = {ext}"));
+                return -3;
+            }
+        }
+        Err(e) => {
+            emit(3, -1, &format!("Status() failed: {e}"));
+            return -3;
+        }
+    }
+
+    0
+}
+
 /// # Safety
 /// `device_id_utf8` 必须是有效的 NUL 结尾 UTF-8 字符串。
 #[no_mangle]
@@ -198,54 +289,79 @@ pub unsafe extern "C" fn btc_open_device(device_id_utf8: *const c_char) -> i32 {
         }
     };
 
-    // 回调参数直接忽略；收到事件后由上层调用 btc_get_state 查询真实状态。
+    // 状态回调来自 WinRT 线程池。直接用 sender 查询状态而不是走全局 INNER，
+    // 可以避免回调与 open/close 抢锁，也不会出现“连接对象还没登记就收到事件”。
     let handler: TypedEventHandler<AudioPlaybackConnection, IInspectable> =
-        TypedEventHandler::new(|_s: Ref<AudioPlaybackConnection>, _a: Ref<IInspectable>| {
-            let st = current_state();
-            emit(2, st, "state_changed");
+        TypedEventHandler::new(|sender: Ref<AudioPlaybackConnection>, _args: Ref<IInspectable>| {
+            let st = match sender.as_ref() {
+                Some(c) => match c.State() {
+                    Ok(AudioPlaybackConnectionState::Opened) => 1,
+                    Ok(_) => 0,
+                    Err(_) => -1,
+                },
+                None => current_state(),
+            };
+            emit(2, st, if st == 1 { "state:opened" } else { "state:closed" });
             Ok(())
         });
-    let _token = conn.StateChanged(&handler);
+
+    let token = conn.StateChanged(&handler).ok();
+
+    // 先登记连接对象，这样连接过程中的查询与事件都能看到它；
+    // 失败路径统一走 close_internal() 回滚。
+    {
+        let mut g = inner().lock().unwrap();
+        g.conn = Some(conn.clone());
+        g.handler = Some(HandlerSlot(handler));
+        g.token = token;
+    }
 
     if let Err(e) = conn.StartAsync().and_then(|a| a.join()) {
         emit(3, -1, &format!("StartAsync failed: {e}"));
+        close_internal();
         return -2;
     }
 
-    let result = match conn.OpenAsync().and_then(|a| a.join()) {
-        Ok(r) => r,
-        Err(e) => {
-            emit(3, -1, &format!("OpenAsync failed: {e}"));
-            return -3;
-        }
-    };
-
-    match result.Status() {
-        Ok(status) => {
-            let ok =
-                status == windows::Media::Audio::AudioPlaybackConnectionOpenResultStatus::Success;
-            if !ok {
-                let ext = result
-                    .ExtendedError()
-                    .map(|h| format!("{h:?}"))
-                    .unwrap_or_else(|_| "n/a".into());
-                emit(3, -1, &format!("Open status = {status:?}, extended = {ext}"));
-                return -3;
-            }
-        }
-        Err(e) => {
-            emit(3, -1, &format!("Status() failed: {e}"));
-            return -3;
-        }
-    }
-
-    {
-        let mut g = inner().lock().unwrap();
-        g.conn = Some(conn);
+    let rc = open_with_timeout(&conn, OPEN_TIMEOUT);
+    if rc != 0 {
+        close_internal();
+        return rc;
     }
 
     emit(2, 1, "opened");
     0
+}
+
+/// 用**现有连接对象**再试一次 Open，不重建、不重新 Start。
+///
+/// 断线重连专用：对象留着，Windows 的 A2DP 端点就一直在，
+/// 对端自己回连和本函数主动重连两条路都保留。
+///
+/// 返回 0 成功 / -1 当前没有可用连接对象 / -3 Open 失败 / -5 超时
+#[no_mangle]
+pub extern "C" fn btc_reopen(timeout_ms: i32) -> i32 {
+    let conn = {
+        let g = inner().lock().unwrap();
+        g.conn.clone()
+    };
+
+    let Some(conn) = conn else {
+        emit(3, -1, "btc_reopen: no connection object");
+        return -1;
+    };
+
+    // 对端可能已经自己连回来了，先看状态，省一次 Open
+    if let Ok(AudioPlaybackConnectionState::Opened) = conn.State() {
+        emit(2, 1, "already opened");
+        return 0;
+    }
+
+    let timeout = Duration::from_millis(timeout_ms.clamp(500, 60_000) as u64);
+    let rc = open_with_timeout(&conn, timeout);
+    if rc == 0 {
+        emit(2, 1, "reopened");
+    }
+    rc
 }
 
 #[no_mangle]

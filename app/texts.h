@@ -33,6 +33,7 @@ namespace texts
     inline const wchar_t* StateScanning() { return Pick(L"使用中的音频设备 · 正在扫描…", L"Active device · Scanning…"); }
     inline const wchar_t* StateConnecting() { return Pick(L"使用中的音频设备 · 正在连接…", L"Active device · Connecting…"); }
     inline const wchar_t* StateConnected() { return Pick(L"使用中的音频设备 · 已连接", L"Active device · Connected"); }
+    inline const wchar_t* StateReconnecting() { return Pick(L"使用中的音频设备 · 正在重新连接…", L"Active device · Reconnecting…"); }
     inline const wchar_t* StateDisconnected() { return Pick(L"使用中的音频设备 · 已断开", L"Active device · Disconnected"); }
     inline const wchar_t* DevicesFmt() { return Pick(L"%d 个设备 · 空闲", L"%d device(s) · Idle"); }
     inline const wchar_t* NoDevices() { return Pick(L"未发现可用设备", L"No devices found"); }
@@ -42,7 +43,9 @@ namespace texts
     inline const wchar_t* RowConnecting() { return Pick(L"正在连接…", L"Connecting…"); }
     inline const wchar_t* RowConnected() { return Pick(L"已连接 · 正在接收音频", L"Connected · Receiving audio"); }
     inline const wchar_t* RowDisconnected() { return Pick(L"已断开", L"Disconnected"); }
+    inline const wchar_t* RowReconnectingFmt() { return Pick(L"正在重新连接…（剩余 %d 秒）", L"Reconnecting… (%ds left)"); }
     inline const wchar_t* RowFailedFmt() { return Pick(L"连接失败（错误码 %d）", L"Failed (code %d)"); }
+    inline const wchar_t* RowTimeout() { return Pick(L"连接超时 · 对方无响应", L"Timed out · no response"); }
 
     // 按钮
     inline const wchar_t* BtnSettings() { return Pick(L"设置", L"Settings"); }

@@ -20,7 +20,10 @@ extern "C" {
 
 /* 事件类型 */
 enum BtcEvent {
-    BTC_EVENT_STATE_CHANGED = 2,   /* 连接状态变化，state 参数有效 */
+    /* 连接状态变化，state 参数有效。
+     * 对端（手机）侧主动断开时同样会收到，此时 state == BTC_STATE_CLOSED；
+     * 调用方应据此更新界面，并按需调用 btc_close_device 释放连接对象。 */
+    BTC_EVENT_STATE_CHANGED = 2,
     BTC_EVENT_ERROR         = 3,   /* 错误，payload 为可读消息 */
 };
 
@@ -53,11 +56,19 @@ char* btc_scan_devices_json(void);
 char* btc_scan_devices_text(void);
 
 /* 主动连接指定设备（Start + Open）。阻塞直到有结果。
- * 成功返回 0；失败：-1 创建连接失败 / -2 Start 失败 / -3 Open 失败 / -4 参数非法 */
+ * 成功返回 0；失败：-1 创建连接失败 / -2 Start 失败 / -3 Open 失败 / -4 参数非法 /
+ * -5 超时（对端 20 秒内未响应，已自动取消并回滚） */
 int32_t btc_open_device(const char* device_id_utf8);
 
 /* 关闭当前连接。无连接时也返回 0。 */
 int32_t btc_close_device(void);
+
+/* 断线重连：用**现有连接对象**再试一次 Open，不重建、不重新 Start。
+ * 必须在 btc_open_device 成功过之后调用；对象不存在时返回 -1。
+ * 保持对象存活意味着 Windows 的 A2DP 端点一直可用，对端自己回连与本函数主动重连两条路都在。
+ * timeout_ms 会被钳制到 [500, 60000]。
+ * 成功返回 0；失败：-1 无可用连接对象 / -3 Open 失败 / -5 超时 */
+int32_t btc_reopen(int32_t timeout_ms);
 
 /* 查询当前连接状态，见 BtcState。 */
 int32_t btc_get_state(void);
