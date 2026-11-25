@@ -7,7 +7,7 @@
 > Turn a Windows PC into a Bluetooth speaker (A2DP sink), shipped as one self-contained exe.
 
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
-![size](https://img.shields.io/badge/exe-242%20KB-informational)
+![size](https://img.shields.io/badge/exe-269%20KB-informational)
 ![ui](https://img.shields.io/badge/UI-Win32%20%2B%20Direct2D-blue)
 ![core](https://img.shields.io/badge/core-Rust-orange)
 
@@ -15,6 +15,9 @@
 
 - **A2DP Sink 接收**：手机连上电脑即可外放
 - **单文件分发**：一个 exe，无 DLL、无运行时、无配置文件
+- **断线自动重连**：对端断开后 30 秒内自动尝试恢复，成功则无缝继续；超时才放弃并释放连接
+- **状态实时同步**：手机侧主动断开时界面立刻反映，不会停留在「已连接」
+- **连接超时保护**：对端 20 秒无响应自动取消，不会卡在「正在连接」
 - **托盘常驻**：关闭窗口只是收进托盘，双击还原；右键菜单可连接最近设备 / 断开 / 退出
 - **记住最近设备**：连接成功后自动记录，最多 3 台，可从托盘菜单一键重连
 - **单实例**：重复启动只会唤起已有窗口，不会多开抢音频连接
@@ -118,7 +121,9 @@ BTAudioReceiver/
 │   ├── texts.h             双语字符串表
 │   ├── theme.h             浅色 / 深色配色
 │   ├── log.h               日志（控制台 / 文件）
-│   └── cli.h               命令行解析
+│   ├── cli.h               命令行解析
+│   ├── app.rc / app.ico    exe 图标与版本资源
+│   └── app.manifest        PerMonitorV2 DPI 感知 + 通用控件
 ├── core/                   Rust 业务内核（静态库，链入 exe）
 │   ├── src/lib.rs          WinRT 蓝牙调用、连接状态机
 │   └── include/btc_core.h  C ABI 契约
